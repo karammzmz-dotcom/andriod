@@ -1,79 +1,145 @@
 
-name: Build Android APK
+name: Build Arduboy Android
 
 on:
-  push:
-    branches: [main, master]
-  pull_request:
   workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Locate Android project
+      - name: Find Android project
         shell: bash
         run: |
-          set -euo pipefail
-          SETTINGS=$(find . -type f -name settings.gradle -not -path './.git/*' -print -quit)
-          if [ -z "$SETTINGS" ]; then
-            echo "Android project not found."
+          set -e
+          if [ -f "$GITHUB_WORKSPACE/extracted-project/settings.gradle" ] || [ -f "$GITHUB_WORKSPACE/extracted-project/settings.gradle.kts" ]; then
+            echo "PROJECT_DIR=$GITHUB_WORKSPACE/extracted-project" >> "$GITHUB_ENV"
+          elif [ -f "$GITHUB_WORKSPACE/settings.gradle" ] || [ -f "$GITHUB_WORKSPACE/settings.gradle.kts" ]; then
+            echo "PROJECT_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          else
+            echo "Could not find the Android project."
             exit 1
           fi
-          PROJECT_DIR=$(dirname "$SETTINGS")
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v5
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
-          python-version: '3.x'
+          distribution: temurin
+          java-version: "17"
 
-      - name: Download Arduboy game collection
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build tools
+        shell: bash
         run: |
-          git clone --depth 1 https://github.com/eried/ArduboyCollection.git "$RUNNER_TEMP/ArduboyCollection"
+          yes | sdkmanager --licenses || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
 
-      - name: Prepare up to 25 additional games
+      - name: Install Gradle 8.9
+        shell: bash
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.9-bin.zip
+          unzip -q gradle-8.9-bin.zip -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gradle-8.9/bin" >> "$GITHUB_PATH"
+
+      - name: Build Arduous emulator core
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
+
+          git clone --depth 1 --recurse-submodules \
+            https://github.com/libretro/arduous.git \
+            "$RUNNER_TEMP/arduous"
+
+          test -f "$RUNNER_TEMP/arduous/include/libretro/libretro.h"
+
+          mkdir -p "$PROJECT_DIR/app/src/main/cpp"
+          mkdir -p "$PROJECT_DIR/app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$PROJECT_DIR/app/src/main/assets/licenses"
+
+          cp "$RUNNER_TEMP/arduous/include/libretro/libretro.h" \
+            "$PROJECT_DIR/app/src/main/cpp/libretro.h"
+
+          if [ -f "$RUNNER_TEMP/arduous/COPYING" ]; then
+            cp "$RUNNER_TEMP/arduous/COPYING" \
+              "$PROJECT_DIR/app/src/main/assets/licenses/Arduous-GPL-3.0.txt"
+          fi
+
+          cmake -S "$RUNNER_TEMP/arduous" \
+            -B "$RUNNER_TEMP/arduous-build" \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/27.2.12479018/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-23 \
+            -DLIBRETRO=ON \
+            -DWERROR=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+
+          cmake --build "$RUNNER_TEMP/arduous-build" \
+            --config Release --parallel 2
+
+          CORE="$(find "$RUNNER_TEMP/arduous-build" -type f -name '*android.so' -print -quit)"
+
+          if [ -z "$CORE" ]; then
+            echo "Arduous Android core was not produced."
+            find "$RUNNER_TEMP/arduous-build" -type f
+            exit 1
+          fi
+
+          cp "$CORE" \
+            "$PROJECT_DIR/app/src/main/jniLibs/arm64-v8a/libarduous_android.so"
+
+      - name: Download Arduboy game collection
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git clone --depth 1 \
+            https://github.com/eried/ArduboyCollection.git \
+            "$RUNNER_TEMP/ArduboyCollection"
+
+          cd "$PROJECT_DIR"
+
+          # Limit the collection to 25 games and require at least 20.
+          python3 - <<'PY'
           from pathlib import Path
-          p = Path("extracted-project/scripts/prepare_games.py")
-          if not p.exists():
-              raise SystemExit("Game preparation script not found.")
+          p = Path("scripts/prepare_games.py")
           s = p.read_text()
-          if "len(entries)>=40" not in s or "len(entries)<5" not in s:
-              raise SystemExit("Unexpected prepare_games.py version; refusing to patch.")
           s = s.replace("len(entries)>=40", "len(entries)>=25")
-          s = s.replace("len(entries)<5", "len(entries)<20")
+          s = s.replace("if len(entries)<5:", "if len(entries)<20:")
           p.write_text(s)
           PY
-          python "$PROJECT_DIR/scripts/prepare_games.py" \
+
+          python3 scripts/prepare_games.py \
             "$RUNNER_TEMP/ArduboyCollection" \
-            "$PROJECT_DIR/app/src/main/assets"
+            app/src/main/assets
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools platforms;android-35 build-tools;35.0.0 ndk;27.2.12479018 cmake;3.22.1'
-
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-
-      - name: Build APK
+      - name: Build Android APK
+        shell: bash
         run: |
+          set -euo pipefail
           cd "$PROJECT_DIR"
-          gradle --no-daemon assembleDebug
+          gradle assembleDebug --no-daemon
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
-          name: Catacombs-Android-debug
+          name: Catacombs-Android-with-Arduboy-games
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
