@@ -1,72 +1,29 @@
-name: Unzip Source and Build APK
+
+name: Unzip Android Project
+
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  build:
+  unzip:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Extract Android project if repository contains only the ZIP
-        shell: bash
+      - name: Extract ZIP
         run: |
-          set -euo pipefail
-          if find . -type f -name settings.gradle -not -path './.git/*' -print -quit | grep -q .; then
-            echo "Android Gradle project already exists in the checkout."
-          else
-            ARCHIVE="$(find . -maxdepth 2 -type f -name 'ArduboyCatacombs-Android*.zip' -not -path './.git/*' -print | sort | tail -n 1)"
-            if [ -z "$ARCHIVE" ]; then
-              echo "No settings.gradle found and no ArduboyCatacombs-Android*.zip archive was found."
-              echo "Upload the project ZIP to the repository root, or upload its extracted contents."
-              exit 1
-            fi
-            echo "Extracting $ARCHIVE"
-            mkdir -p .android-project-extracted
-            unzip -oq "$ARCHIVE" -d .android-project-extracted
-          fi
+          mkdir -p extracted-project
+          unzip -o ArduboyCatacombs-Android-FIXED4.zip -d extracted-project
 
-      - name: Locate Android Gradle project
-        shell: bash
+      - name: Commit extracted files
         run: |
-          set -euo pipefail
-          SETTINGS="$(find . -type f -name settings.gradle -not -path './.git/*' -not -path '*/.gradle/*' -print -quit)"
-          if [ -z "$SETTINGS" ]; then
-            echo "Could not find settings.gradle after extraction."
-            find . -maxdepth 5 -type f | sort | head -200
-            exit 1
-          fi
-          PROJECT_DIR="$(dirname "$SETTINGS")"
-          if [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
-            echo "Found $SETTINGS but app/build.gradle is missing from $PROJECT_DIR"
-            exit 1
-          fi
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Found Android project at: $PROJECT_DIR"
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Install Android SDK packages
-        uses: android-actions/setup-android@v3
-        with:
-          packages: 'platform-tools platforms;android-35 build-tools;35.0.0 ndk;27.2.12479018 cmake;3.22.1'
-
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-
-      - name: Build debug APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$PROJECT_DIR"
-          gradle --no-daemon assembleDebug
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Catacombs-Android-debug
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add extracted-project
+          git commit -m "Extract ArduboyCatacombs Android project" || echo "No changes to commit"
+          git push
