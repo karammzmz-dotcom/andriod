@@ -13,24 +13,43 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
-      - name: Install Android NDK and CMake
-        run: sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"
+      - name: Configure Android SDK packages (without legacy tools package)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK_ROOT/cmdline-tools" ]; then
+            echo "Android command-line tools not found under $SDK_ROOT"
+            exit 1
+          fi
+          SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager -print | sort -V | tail -n 1)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager executable not found"
+            exit 1
+          fi
+          echo "Using SDK: $SDK_ROOT"
+          echo "Using sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --sdk_root="$SDK_ROOT" --licenses >/dev/null || true
+          "$SDKMANAGER" --sdk_root="$SDK_ROOT" --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Find Android project directory
+      - name: Locate Android Gradle project
         shell: bash
         run: |
           set -euo pipefail
           PROJECT_DIR="$(find . -type f -name settings.gradle -not -path '*/.gradle/*' -print -quit | xargs -r dirname)"
           if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/app/build.gradle" ]; then
-            echo "Could not locate the Android Gradle project. Expected settings.gradle and app/build.gradle."
-            find . -maxdepth 4 -type f | sort | head -200
+            echo "Could not find settings.gradle and app/build.gradle"
+            find . -maxdepth 5 -type f | sort | head -200
             exit 1
           fi
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Found Android project at: $PROJECT_DIR"
+          echo "Found project: $PROJECT_DIR"
       - name: Build debug APK
         shell: bash
         run: |
