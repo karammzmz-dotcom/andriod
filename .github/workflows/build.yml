@@ -1,107 +1,26 @@
-name: build
-
-# Builds the Catacombs of the Damned debug APK for Android.
-# Trigger from the Actions tab (Run workflow) or on push to main.
+name: Build Android APK
 on:
-  workflow_dispatch:
   push:
     branches: [ main, master ]
-
+  pull_request:
+  workflow_dispatch:
 jobs:
-  unzip:
-    uses: ./.github/workflows/unzip.yml
-
-  build-apk:
-    needs: unzip
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download extracted game source
-        uses: actions/download-artifact@v4
-        with:
-          name: arduboy3d-source
-          path: game_source
-
-      - name: Clone SDL2 (Android project template + source)
-        run: git clone --depth 1 --branch release-2.30.x https://github.com/libsdl-org/SDL.git sdl2_src
-
-      - name: Assemble Android project
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf android
-          cp -r sdl2_src/android-project android
-
-          # SDL2 source is built by our CMake script as a subdirectory.
-          rm -rf android/app/jni/SDL
-          cp -r sdl2_src android/app/jni/SDL
-
-          # Our native build script replaces the template's sample one.
-          cp custom/CMakeLists.txt android/app/jni/CMakeLists.txt
-
-          # Engine source: all .cpp/.h from Source/Arduboy3D (the .ino is
-          # replaced by custom/AndroidMain.cpp).
-          ENGINE_DIR=$(find game_source -type d -name Arduboy3D -path '*/Source/*' | head -n 1)
-          echo "Engine source: $ENGINE_DIR"
-          rm -rf android/app/jni/src
-          mkdir -p android/app/jni/src/Generated
-          cp "$ENGINE_DIR"/*.cpp "$ENGINE_DIR"/*.h android/app/jni/src/
-          cp "$ENGINE_DIR"/Generated/* android/app/jni/src/Generated/
-          cp custom/AndroidMain.cpp android/app/jni/src/
-          cp custom/Defines.h android/app/jni/src/Defines.h
-
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
-      - name: Install SDK components matching the template
-        shell: bash
-        run: |
-          set -euo pipefail
-          # ubuntu-latest ships with the Android SDK preinstalled at
-          # $ANDROID_SDK_ROOT, so we use its sdkmanager directly instead of
-          # the setup-android action (which fails on this runner image).
-          SDK="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
-          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER=$(find "$SDK/cmdline-tools" -path '*/bin/sdkmanager' | head -n 1)
-          fi
-          echo "Using sdkmanager: $SDKMANAGER"
-
-          # Use whatever NDK the template asks for, falling back to a known one.
-          NDK=$(grep -oP "ndkVersion\s*['\"]\K[^'\"]+" android/app/build.gradle || true)
-          NDK=${NDK:-26.1.10909125}
-          echo "Using NDK $NDK"
-
-          yes | "$SDKMANAGER" --licenses > /dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" \
-            "ndk;$NDK" "cmake;3.22.1"
-
-          echo "sdk.dir=$SDK" > android/local.properties
-
-      - name: Build debug APK
-        working-directory: android
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f gradlew ]; then
-            chmod +x gradlew
-            ./gradlew assembleDebug --stacktrace
-          else
-            # Template had no wrapper: install Gradle and generate one.
-            sudo apt-get update -y && sudo apt-get install -y gradle
-            gradle wrapper --gradle-version 8.7
-            chmod +x gradlew
-            ./gradlew assembleDebug --stacktrace
-          fi
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: android-actions/setup-android@v3
+      - name: Install Android NDK and CMake
+        run: sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          name: catacombs-android-debug-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          gradle-version: '8.9'
+      - run: gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Catacombs-Android-debug
+          path: app/build/outputs/apk/debug/*.apk
