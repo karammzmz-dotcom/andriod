@@ -28,7 +28,7 @@ jobs:
           elif [ -f "$GITHUB_WORKSPACE/settings.gradle" ] || [ -f "$GITHUB_WORKSPACE/settings.gradle.kts" ]; then
             echo "PROJECT_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           else
-            echo "Could not find the Android project."
+            echo "Could not find Android project."
             exit 1
           fi
 
@@ -41,7 +41,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Install Android build tools
+      - name: Install Android packages
         shell: bash
         run: |
           yes | sdkmanager --licenses || true
@@ -116,7 +116,6 @@ jobs:
 
           cd "$PROJECT_DIR"
 
-          # Limit the collection to 25 games and require at least 20.
           python3 - <<'PY'
           from pathlib import Path
           p = Path("scripts/prepare_games.py")
