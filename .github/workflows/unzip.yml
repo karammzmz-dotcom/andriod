@@ -1,0 +1,43 @@
+name: unzip
+
+# Finds the Arduboy3D zip in the repo, unzips it and uploads the
+# extracted game source as an artifact. Called by build.yml, and can
+# also be run on its own from the Actions tab.
+on:
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Find and unzip Arduboy3D archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Accepts any of: Arduboy3D-1_0.zip, Arduboy3D-1.0.zip, Arduboy3D.zip, ...
+          ZIP_PATH=$(find . -path ./.git -prune -o -type f -iname 'Arduboy3D*.zip' -print | head -n 1)
+          if [ -z "$ZIP_PATH" ]; then
+            echo "::error::No file matching Arduboy3D*.zip found in the repository root."
+            echo "Repository contents:"
+            find . -path ./.git -prune -o -print | sort
+            exit 1
+          fi
+          echo "Found archive: $ZIP_PATH"
+          unzip -q "$ZIP_PATH" -d game_source
+          echo "Extracted contents:"
+          find game_source -maxdepth 4 -type d | sort
+          if [ -z "$(find game_source -type d -name Arduboy3D -path '*/Source/*')" ]; then
+            echo "::error::Source/Arduboy3D folder not found inside the archive."
+            exit 1
+          fi
+
+      - name: Upload extracted source
+        uses: actions/upload-artifact@v4
+        with:
+          name: arduboy3d-source
+          path: game_source
+          retention-days: 3
