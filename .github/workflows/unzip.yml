@@ -1,29 +1,97 @@
-
-name: Unzip Android Project
-
+name: Unzip Source and Build Arduboy Black & White APK
 on:
   workflow_dispatch:
-
-permissions:
-  contents: write
-
 jobs:
-  unzip:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Extract ZIP
+      - uses: actions/checkout@v4
+      - name: Locate or extract Android project
+        shell: bash
         run: |
-          mkdir -p extracted-project
-          unzip -o ArduboyCatacombs-Android-FIXED4.zip -d extracted-project
-
-      - name: Commit extracted files
+          set -euo pipefail
+          if [ -f settings.gradle ] && [ -f app/build.gradle ]; then
+            PROJECT_DIR="$PWD"
+          else
+            ARCHIVE="$(find . -maxdepth 2 -type f -name 'ArduboyCatacombs-Android-FIXED4.zip' -print -quit)"
+            if [ -z "$ARCHIVE" ]; then
+              echo "Upload the project contents or ArduboyCatacombs-Android-FIXED4.zip to the repository root."
+              exit 1
+            fi
+            mkdir -p .android-project
+            unzip -oq "$ARCHIVE" -d .android-project
+            SETTINGS="$(find .android-project -type f -name settings.gradle -print -quit)"
+            if [ -z "$SETTINGS" ]; then echo "settings.gradle not found after extracting $ARCHIVE"; exit 1; fi
+            PROJECT_DIR="$PWD/$(dirname "$SETTINGS")"
+          fi
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Using Android project: $PROJECT_DIR"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android SDK packages
+        shell: bash
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add extracted-project
-          git commit -m "Extract ArduboyCatacombs Android project" || echo "No changes to commit"
-          git push
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print | sort -V | tail -n 1)"
+          test -n "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Fetch and build Arduous Arduboy emulator core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          git clone --depth 1 --recurse-submodules https://github.com/libretro/arduous.git "$RUNNER_TEMP/arduous"
+          mkdir -p app/src/main/assets/licenses
+          cp "$RUNNER_TEMP/arduous/include/libretro/libretro.h" app/src/main/cpp/libretro.h
+          cp "$RUNNER_TEMP/arduous/COPYING" app/src/main/assets/licenses/Arduous-GPL-3.0.txt
+          echo "Arduous source commit: $(git -C "$RUNNER_TEMP/arduous" rev-parse HEAD)" > app/src/main/assets/ARDUOUS_SOURCE.txt
+          echo "Source: https://github.com/libretro/arduous" >> app/src/main/assets/ARDUOUS_SOURCE.txt
+          cmake -S "$RUNNER_TEMP/arduous" -B "$RUNNER_TEMP/arduous/build-android" \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-23 -DANDROID=ON \
+            -DLIBRETRO=ON -DWERROR=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/arduous/build-android" --config Release --parallel 2
+          CORE="$(find "$RUNNER_TEMP/arduous/build-android" -type f -name '*android.so' -print -quit)"
+          if [ -z "$CORE" ]; then echo "Arduous core build produced no Android shared library."; find "$RUNNER_TEMP/arduous/build-android" -type f | head -100; exit 1; fi
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp "$CORE" app/src/main/jniLibs/arm64-v8a/libarduous_android.so
+      - name: Prepare licensed offline Arduboy game library
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          git clone --depth 1 https://github.com/eried/ArduboyCollection.git "$RUNNER_TEMP/ArduboyCollection"
+          python3 scripts/prepare_games.py "$RUNNER_TEMP/ArduboyCollection" app/src/main/assets
+          cp "$RUNNER_TEMP/ArduboyCollection/LICENSE" app/src/main/assets/licenses/ArduboyCollection-BSD-3-Clause.txt
+          python3 -m pip install --break-system-packages --quiet platformio
+          python3 scripts/prepare_extra_repos.py app/src/main/assets scripts/extra_repos.txt
+          python3 - <<'PY' > "$RUNNER_TEMP/licenses.txt"
+          import json
+          print('\n'.join(sorted({x['license'] for x in json.load(open('app/src/main/assets/games.json',encoding='utf-8'))})))
+          PY
+          while IFS= read -r license; do
+            [ -z "$license" ] && continue
+            curl -fsSL "https://raw.githubusercontent.com/spdx/license-list-data/v3.25/text/${license}.txt" -o "app/src/main/assets/licenses/${license}.txt"
+          done < "$RUNNER_TEMP/licenses.txt"
+      - name: Build Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          gradle --no-daemon assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Arduboy-Black-and-White-debug
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
