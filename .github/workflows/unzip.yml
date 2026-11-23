@@ -80,10 +80,23 @@ jobs:
           import json
           print('\n'.join(sorted({x['license'] for x in json.load(open('app/src/main/assets/games.json',encoding='utf-8'))})))
           PY
+          fetch_spdx() {
+            local id="$1" ref
+            for ref in v3.25 main; do
+              if curl -fsSL "https://raw.githubusercontent.com/spdx/license-list-data/${ref}/text/${id}.txt" -o "app/src/main/assets/licenses/${id}.txt"; then
+                echo "Licence text for ${id} from ${ref}"
+                return 0
+              fi
+            done
+            echo "::error::No SPDX licence text found for licence id '${id}'"
+            return 1
+          }
+          FAILED=0
           while IFS= read -r license; do
             [ -z "$license" ] && continue
-            curl -fsSL "https://raw.githubusercontent.com/spdx/license-list-data/v3.25/text/${license}.txt" -o "app/src/main/assets/licenses/${license}.txt"
+            fetch_spdx "$license" || FAILED=1
           done < "$RUNNER_TEMP/licenses.txt"
+          [ "$FAILED" -eq 0 ] || exit 1
       - name: Build Android APK
         shell: bash
         run: |
