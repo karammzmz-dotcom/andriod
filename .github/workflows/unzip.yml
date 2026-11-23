@@ -13,9 +13,9 @@ jobs:
           if [ -f settings.gradle ] && [ -f app/build.gradle ]; then
             PROJECT_DIR="$PWD"
           else
-            ARCHIVE="$(find . -maxdepth 2 -type f -name 'ArduboyCatacombs-Android-FIXED4.zip' -print -quit)"
+            ARCHIVE="$(find . -maxdepth 2 -type f -iname 'ArduboyCatacombs*.zip' -print -quit)"
             if [ -z "$ARCHIVE" ]; then
-              echo "Upload the project contents or ArduboyCatacombs-Android-FIXED4.zip to the repository root."
+              echo "Upload the project contents or an ArduboyCatacombs*.zip to the repository root. Files at root:"; ls -la
               exit 1
             fi
             mkdir -p .android-project
